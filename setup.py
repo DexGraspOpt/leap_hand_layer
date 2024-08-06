@@ -9,7 +9,7 @@ setup(
     description='Leap Hand kinematics layer',
     author='Wei Wei',
     author_email='wei.wei@cair-cas.org.hk',
-    url='wei.wei2018@ia.ac.cn',
+    url='https://github.com/v-wewei/leap_hand_layer.git',
     packages=find_packages(),
     install_requires=[
         'numpy',

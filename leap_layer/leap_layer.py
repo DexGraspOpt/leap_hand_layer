@@ -8,7 +8,7 @@ import pytorch_kinematics as pk
 
 
 import sys
-sys.path.append('./')
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from layer_asset_utils import save_part_mesh, sample_points_on_mesh, sample_visible_points
 
 BASE_DIR = os.path.split(os.path.abspath(__file__))[0]
@@ -16,14 +16,17 @@ BASE_DIR = os.path.split(os.path.abspath(__file__))[0]
 
 
 class LeapHandLayer(torch.nn.Module):
-    def __init__(self, to_mano_frame=True, show_mesh=False, device='cuda'):
+    def __init__(self, to_mano_frame=True, show_mesh=False, hand_type='right', device='cuda'):
         super().__init__()
 
         self.show_mesh = show_mesh
         self.to_mano_frame = to_mano_frame
         self.device = device
+        self.name = 'leap_hand'
+        self.hand_type = hand_type
+        self.finger_num = 4
 
-        urdf_path = os.path.join(BASE_DIR, '../assets/leap_hand.urdf')
+        urdf_path = os.path.join(BASE_DIR, '../assets/leap_hand_{}.urdf'.format(hand_type))
         self.chain = pk.build_chain_from_urdf(open(urdf_path).read()).to(device=device)
 
         self.joints_lower = self.chain.low
@@ -33,7 +36,6 @@ class LeapHandLayer(torch.nn.Module):
         self.joint_names = self.chain.get_joint_parameter_names()
         self.n_dofs = self.chain.n_joints  # only used here for robot hand with no mimic joint
 
-        # print(self.chain.get_links())
         self.link_dict = {}
         for link in self.chain.get_links():
             self.link_dict[link.name] = link.visuals[0].geom_param[0].split('/')[-1]
@@ -46,6 +48,8 @@ class LeapHandLayer(torch.nn.Module):
             'mcp_joint_2', 'pip_2', 'dip_2', 'fingertip_2',  # middle
             'mcp_joint_3', 'pip_3', 'dip_3', 'fingertip_3',  # ring
         ]
+
+        self.ordered_finger_endeffort = ['palm_lower',  'thumb_fingertip', 'fingertip', 'fingertip_2', 'fingertip_3']
 
         # transformation for align the robot hand to mano hand frame, used for
         self.to_mano_transform = torch.eye(4).to(torch.float32).to(device)
@@ -70,7 +74,7 @@ class LeapHandLayer(torch.nn.Module):
             self.make_contact_points = False
 
         self.meshes = self.load_meshes()
-        self.hand_segment_indices = self.get_hand_segment_indices()
+        self.hand_segment_indices, self.hand_finger_indices = self.get_hand_segment_indices()
 
     def create_assets(self):
         '''
@@ -132,18 +136,7 @@ class LeapHandLayer(torch.nn.Module):
                 if self.make_contact_points:
                     mesh = trimesh.load(mesh_filepath.replace('assets/hand_meshes/', 'assets/hand_meshes_cvx/'))
 
-                #     # mesh = mesh.convex_hull
-                #     mesh_ = mesh.convex_decomposition(
-                #         maxConvexHulls=16 if key == 'base_link' else 2,
-                #         resolution=800000 if key == 'base_link' else 1000,
-                #         minimumVolumePercentErrorAllowed=0.1 if key == 'base_link' else 10,
-                #         maxRecursionDepth=10 if key == 'base_link' else 4,
-                #         shrinkWrap=True, fillMode='flood', maxNumVerticesPerCH=32,
-                #         asyncACD=True, minEdgeLength=2, findBestPlane=False
-                #     )
-                #     mesh = np.sum(mesh_)
                 verts = link_pre_transform.transform_points(torch.FloatTensor(np.array(mesh.vertices)))
-
 
                 temp = torch.ones(mesh.vertices.shape[0], 1).float()
                 vertex_normals = link_pre_transform.transform_normals(torch.FloatTensor(copy.deepcopy(mesh.vertex_normals)))
@@ -179,12 +172,17 @@ class LeapHandLayer(torch.nn.Module):
 
     def get_hand_segment_indices(self):
         hand_segment_indices = {}
-        start = torch.tensor(0, dtype=torch.long, device=self.device)
+        hand_finger_indices = {}
+        segment_start = torch.tensor(0, dtype=torch.long, device=self.device)
+        finger_start = torch.tensor(0, dtype=torch.long, device=self.device)
         for link_name in self.order_keys:
-            end = torch.tensor(self.meshes[link_name][0].shape[0], dtype=torch.long, device=self.device) + start
-            hand_segment_indices[link_name] = [start, end]
-            start = end.clone()
-        return hand_segment_indices
+            end = torch.tensor(self.meshes[link_name][0].shape[0], dtype=torch.long, device=self.device) + segment_start
+            hand_segment_indices[link_name] = [segment_start, end]
+            if link_name in self.ordered_finger_endeffort:
+                hand_finger_indices[link_name] = [finger_start, end]
+                finger_start = end.clone()
+            segment_start = end.clone()
+        return hand_segment_indices, hand_finger_indices
 
     def forward(self, theta):
         """
@@ -194,13 +192,26 @@ class LeapHandLayer(torch.nn.Module):
         ret = self.chain.forward_kinematics(theta)
         return ret
 
+    def compute_abnormal_joint_loss(self, theta):
+        loss_1 = -torch.clamp(theta[:, 5] - theta[:, 1], -1, 0) * 10
+        loss_2 = -torch.clamp(theta[:, 9] - theta[:, 5], -1, 0) * 10
+        loss_3 = torch.abs(theta[:, [2, 3,  6, 7,  10, 11]] - self.joints_mean[[2, 3,  6, 7,  10, 11]].unsqueeze(0)).sum(dim=-1) * 2
+        return loss_1 + loss_2 + loss_3
+
+    def get_init_angle(self):
+        init_angle = (self.joints_upper - self.joints_lower) / 6.0 + self.joints_lower
+        init_angle[1] = -0.1
+        init_angle[5] = 0.0
+        init_angle[9] = 0.1
+        init_angle[12] = 0.8
+        return init_angle
+
     def get_hand_mesh(self, pose, ret):
         bs = pose.shape[0]
 
         meshes = []
         for key in self.order_keys:
             rotmat = ret[key].get_matrix()
-            # rotmat = torch.matmul(pose, torch.matmul(self.to_mano_transform.T, rotmat))
             rotmat = torch.matmul(pose, torch.matmul(self.to_mano_transform, rotmat))
 
             vertices = self.meshes[key][0]
@@ -245,7 +256,7 @@ class LeapHandLayer(torch.nn.Module):
                     os.makedirs('../assets/hand_composite_points', exist_ok=True)
                 np.save('../assets/hand_composite_points/{}.npy'.format(key),
                         batch_vertices.squeeze().cpu().numpy())
-            rotmat[:, :3, 3] = 0
+            rotmat[:, :3, 3] *= 0
             batch_vertex_normals = torch.matmul(rotmat, vertex_normals.transpose(0, 1)).transpose(1, 2)[..., :3]
             verts_normal.append(batch_vertex_normals)
 
@@ -319,7 +330,7 @@ if __name__ == "__main__":
 
     show_mesh = False
     to_mano_frame = True
-    allegro = LeapHandLayer(show_mesh=show_mesh, to_mano_frame=to_mano_frame, device=device)
+    leap = LeapHandLayer(show_mesh=show_mesh, to_mano_frame=to_mano_frame, device=device)
 
     pose = torch.from_numpy(np.identity(4)).to(device).reshape(-1, 4, 4).float()
     theta = np.zeros((1, 16), dtype=np.float32)
@@ -328,11 +339,11 @@ if __name__ == "__main__":
 
     # mesh version
     if show_mesh:
-        mesh = allegro.get_forward_hand_mesh(pose, theta)[0]
+        mesh = leap.get_forward_hand_mesh(pose, theta)[0]
         mesh.show()
     else:
 
-        verts, normals = allegro.get_forward_vertices(pose, theta)
+        verts, normals = leap.get_forward_vertices(pose, theta)
         pc = trimesh.PointCloud(verts.squeeze().cpu().numpy(), colors=(0, 255, 255))
 
         ray_visualize = trimesh.load_path(np.hstack((verts[0].detach().cpu().numpy(),

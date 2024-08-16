@@ -13,7 +13,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         'numpy',
-        'torch1.10.0',
+        'torch',
         'trimesh',
         'roma',
         'pytorch-kinematics',

@@ -11,7 +11,6 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from layer_asset_utils import save_part_mesh, sample_points_on_mesh, sample_visible_points
 
-BASE_DIR = os.path.split(os.path.abspath(__file__))[0]
 # All lengths are in mm and rotations in radians
 
 
@@ -25,8 +24,9 @@ class LeapHandLayer(torch.nn.Module):
         self.name = 'leap_hand'
         self.hand_type = hand_type
         self.finger_num = 4
-
-        urdf_path = os.path.join(BASE_DIR, '../assets/leap_hand_{}.urdf'.format(hand_type))
+        
+        self.BASE_DIR = os.path.split(os.path.abspath(__file__))[0]
+        urdf_path = os.path.join(self.BASE_DIR, '../assets/leap_hand_{}.urdf'.format(hand_type))
         self.chain = pk.build_chain_from_urdf(open(urdf_path).read()).to(device=device)
 
         self.joints_lower = self.chain.low
@@ -97,13 +97,13 @@ class LeapHandLayer(torch.nn.Module):
         parts = mesh.split()
 
         new_mesh = trimesh.boolean.boolean_manifold(parts, 'union')
-        new_mesh.export(os.path.join(BASE_DIR, '../assets/hand.obj'))
+        new_mesh.export(os.path.join(self.BASE_DIR, '../assets/hand.obj'))
 
         self.show_mesh = True
         self.make_contact_points = False
         self.meshes = self.load_meshes()
         mesh = self.get_forward_hand_mesh(pose, theta)[0]
-        mesh.export(os.path.join(BASE_DIR, '../assets/hand_all_zero.obj'))
+        mesh.export(os.path.join(self.BASE_DIR, '../assets/hand_all_zero.obj'))
 
         self.show_mesh = False
         self.make_contact_points = True
@@ -120,7 +120,7 @@ class LeapHandLayer(torch.nn.Module):
                                                       [0, 1, 0, 0.0375]])
         self.meshes = self.load_meshes()
         mesh = self.get_forward_hand_mesh(pose, theta)[0]
-        mesh.export(os.path.join(BASE_DIR, '../assets/hand_to_mano_frame.obj'))
+        mesh.export(os.path.join(self.BASE_DIR, '../assets/hand_to_mano_frame.obj'))
 
         self.make_contact_points = False
         self.show_mesh = show_mesh
@@ -296,7 +296,7 @@ class LeapAnchor(torch.nn.Module):
             0, 0,  # place holder
 
         ])
-        # vert_idx = np.load(os.path.join(BASE_DIR, 'anchor_idx.npy'))
+        # vert_idx = np.load(os.path.join(self.BASE_DIR, 'anchor_idx.npy'))
         self.register_buffer("vert_idx", torch.from_numpy(vert_idx).long())
 
     def forward(self, vertices):
@@ -330,7 +330,7 @@ if __name__ == "__main__":
 
     show_mesh = False
     to_mano_frame = True
-    leap = LeapHandLayer(show_mesh=show_mesh, to_mano_frame=to_mano_frame, device=device)
+    hand = LeapHandLayer(show_mesh=show_mesh, to_mano_frame=to_mano_frame, device=device)
 
     pose = torch.from_numpy(np.identity(4)).to(device).reshape(-1, 4, 4).float()
     theta = np.zeros((1, 16), dtype=np.float32)
@@ -339,11 +339,11 @@ if __name__ == "__main__":
 
     # mesh version
     if show_mesh:
-        mesh = leap.get_forward_hand_mesh(pose, theta)[0]
+        mesh = hand.get_forward_hand_mesh(pose, theta)[0]
         mesh.show()
     else:
 
-        verts, normals = leap.get_forward_vertices(pose, theta)
+        verts, normals = hand.get_forward_vertices(pose, theta)
         pc = trimesh.PointCloud(verts.squeeze().cpu().numpy(), colors=(0, 255, 255))
 
         ray_visualize = trimesh.load_path(np.hstack((verts[0].detach().cpu().numpy(),
@@ -351,7 +351,7 @@ if __name__ == "__main__":
         scene = trimesh.Scene([pc, ray_visualize])
         scene.show()
 
-        mesh = trimesh.load(os.path.join(BASE_DIR, '../assets/hand_to_mano_frame.obj'))
+        mesh = trimesh.load(os.path.join(hand.BASE_DIR, '../assets/hand_to_mano_frame.obj'))
 
         anchor_layer = LeapAnchor()
         anchors = anchor_layer(verts).squeeze().cpu().numpy()

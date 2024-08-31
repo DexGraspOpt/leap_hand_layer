@@ -173,15 +173,15 @@ class LeapHandLayer(torch.nn.Module):
     def get_hand_segment_indices(self):
         hand_segment_indices = {}
         hand_finger_indices = {}
-        segment_start = torch.tensor(0, dtype=torch.long, device=self.device)
-        finger_start = torch.tensor(0, dtype=torch.long, device=self.device)
+        segment_start = 0  # torch.tensor(0, dtype=torch.long, device=self.device)
+        finger_start = 0  # torch.tensor(0, dtype=torch.long, device=self.device)
         for link_name in self.order_keys:
-            end = torch.tensor(self.meshes[link_name][0].shape[0], dtype=torch.long, device=self.device) + segment_start
-            hand_segment_indices[link_name] = [segment_start, end]
+            end = segment_start + self.meshes[link_name][0].shape[0]  # torch.tensor(self.meshes[link_name][0].shape[0], dtype=torch.long, device=self.device)
+            hand_segment_indices[link_name] = torch.arange(segment_start, end)  # [segment_start, end]
             if link_name in self.ordered_finger_endeffort:
-                hand_finger_indices[link_name] = [finger_start, end]
-                finger_start = end.clone()
-            segment_start = end.clone()
+                hand_finger_indices[link_name] = torch.arange(finger_start, end)  # [finger_start, end]
+                finger_start = end  # end.clone()
+            segment_start = end  # end.clone()
         return hand_segment_indices, hand_finger_indices
 
     def forward(self, theta):
@@ -334,7 +334,7 @@ if __name__ == "__main__":
 
     pose = torch.from_numpy(np.identity(4)).to(device).reshape(-1, 4, 4).float()
     theta = np.zeros((1, 16), dtype=np.float32)
-    theta[0, :4] = np.array([0.0, -0.0, 0, 0])
+    theta[0, :4] = np.array([0.0, 0.0, 0, 0])
     theta = torch.from_numpy(theta).to(device)
 
     # mesh version
